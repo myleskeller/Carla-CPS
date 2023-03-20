@@ -7,4 +7,5 @@ This is accomplished entirely on the client-side by exploiting the functionality
 To run it:
  - start your carla server instance (you can download precompiled binaries off of their official github)
  - open a command prompt
+ - `cd` to the folder containing `manual_control_AObstacleDetectionSensor.py`
  - enter `python manual_control_AObstacleDetectionSensor.py --sync`
