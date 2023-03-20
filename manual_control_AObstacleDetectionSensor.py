@@ -77,10 +77,6 @@ except IndexError:
     pass
 
 
-# ==============================================================================
-# -- imports -------------------------------------------------------------------
-# ==============================================================================
-
 
 import carla
 
@@ -148,6 +144,9 @@ except ImportError:
 #! literally just for changing texture colors..
 from PIL import Image
 
+#! because i can't figure out how to pass client into sensor without maiing it global
+tm_port = 8000
+
 #! ==============================================================================
 #! declaring data structure to hold AWayNet stuff
 
@@ -181,11 +180,6 @@ class AWayNet:
 
 AWayNet_list = dict()  #! holds data structures for each AWayNet-compatible actor
 #! ==============================================================================
-
-
-# =============================================================================
-# -- Global functions ----------------------------------------------------------
-# ==============================================================================
 
 
 def find_weather_presets():
@@ -223,11 +217,6 @@ def get_actor_blueprints(world, filter, generation):
     except:
         print("   Warning! Actor Generation is not valid. No actor will be spawned.")
         return []
-
-
-# ==============================================================================
-# -- World ---------------------------------------------------------------------
-# ==============================================================================
 
 
 class World(object):
@@ -346,6 +335,13 @@ class World(object):
         self.hud.notification("Weather: %s" % preset[1])
         self.player.get_world().set_weather(preset[0])
 
+        #. turns off all of the lights in the map
+        '''
+        light_manager = self.player.get_world().get_lightmanager()
+        all_lights = light_manager.get_all_lights()
+        light_manager.turn_off(all_lights)
+        '''
+
     def next_map_layer(self, reverse=False):
         self.current_map_layer += -1 if reverse else 1
         self.current_map_layer %= len(self.map_layer_names)
@@ -406,11 +402,6 @@ class World(object):
                 sensor.destroy()
         if self.player is not None:
             self.player.destroy()
-
-
-# ==============================================================================
-# -- KeyboardControl -----------------------------------------------------------
-# ==============================================================================
 
 
 class KeyboardControl(object):
@@ -707,11 +698,6 @@ class KeyboardControl(object):
         return (key == K_ESCAPE) or (key == K_q and pygame.key.get_mods() & KMOD_CTRL)
 
 
-# ==============================================================================
-# -- HUD -----------------------------------------------------------------------
-# ==============================================================================
-
-
 class HUD(object):
     def __init__(self, width, height):
         self.dim = (width, height)
@@ -859,11 +845,6 @@ class HUD(object):
         self.help.render(display)
 
 
-# ==============================================================================
-# -- FadingText ----------------------------------------------------------------
-# ==============================================================================
-
-
 class FadingText(object):
     def __init__(self, font, dim, pos):
         self.font = font
@@ -886,12 +867,6 @@ class FadingText(object):
 
     def render(self, display):
         display.blit(self.surface, self.pos)
-
-
-# ==============================================================================
-# -- HelpText ------------------------------------------------------------------
-# ==============================================================================
-
 
 class HelpText(object):
     """Helper class to handle text output using pygame"""
@@ -917,11 +892,6 @@ class HelpText(object):
     def render(self, display):
         if self._render:
             display.blit(self.surface, self.pos)
-
-
-# ==============================================================================
-# -- CollisionSensor -----------------------------------------------------------
-# ==============================================================================
 
 
 class CollisionSensor(object):
@@ -956,11 +926,6 @@ class CollisionSensor(object):
         self.history.append((event.frame, intensity))
         if len(self.history) > 4000:
             self.history.pop(0)
-
-
-#! ==============================================================================
-#! -- ObstacleDetectionEvent ----------------------------------------------------
-#! ==============================================================================
 
 
 class AObstacleDetectionSensor(object):
@@ -1004,74 +969,18 @@ class AObstacleDetectionSensor(object):
             if AWayNet_list[detector_actor].isNewerThan(AWayNet_list[other_actor]):
                 print("\n" + str(detector_actor) + "'s message is newer than " + str(other_actor) + "'s")
 
-                # . if it is out of date, assign it the message from detector_actor to other_actor
+                 # . if it is out of date, assign it the message from detector_actor to other_actor
                 AWayNet_list[other_actor].setMessage(
                     AWayNet_list[detector_actor].getMessage(), AWayNet_list[detector_actor].getTimestamp()
                 )
                 print(str(other_actor) + " updated to " + AWayNet_list[other_actor].print())
 
-                """
-                . this works, but the points don't update and they stay long after the session ends.
-                . i'd have to have the client get the location of all relevant entities every single
-                . frame in order for it to visualize properly, which seems inefficient.
-                self.debug.draw_point(
-                    self._parent.get_location(),  #. location of parent actor
-                    size=0.5,  #. in meters
-                    life_time=60 * 60 * 5,  #. 5 minutes at 60 fps
-                    # color=carla.Color(r, g, b), #. should default to red
-                )
-                """
+                #. opens doors and illuminates all equipped lights of propagated actors
+                event.other_actor.open_door(carla.VehicleDoor.All)
+                print("opened all doors on "+str(other_actor))
 
-                # TODO attempt to change color of vehicle to visually indicate propagation
-                # Load the modified texture
-                # ? GET NAME OF OBJECT AND JUST APPEND .tga???
-                # actor_type = get_actor_display_name(event.other_actor)
-                # print(self.world.get_names_of_all_objects())
-                objs = self.world.get_names_of_all_objects()
-                # print(str(event.other_actor.attributes))
-
-                # color = {"color": "255,255,255"}
-                # event.other_actor.attributes.update(color)
-
-                # print(str(event.other_actor.attributes))
-                for obj in objs:
-                    # image = Image.open("BP_Apartment04_v05_modified.tga")
-                    # try:
-                    # image = Image.open(obj + ".tga")
-                    # height = image.size[1]
-                    # width = image.size[0]
-
-                    # Instantiate a carla.TextureColor object and populate
-                    # the pixels with data from the modified image\
-
-                    color = [0, 0, 0]
-
-                    image = Image.new("RGB", (2048, 2048), (0, 0, 0))
-                    height = image.size[1]
-                    width = image.size[0]
-
-                    texture = carla.TextureColor(width, height)
-                    for x in range(0, width):
-                        for y in range(0, height):
-                            color = image.getpixel((x, y))
-                            r = int(color[0])
-                            g = int(color[1])
-                            b = int(color[2])
-                            a = 255
-                            texture.set(x, y, carla.Color(r, g, b, a))
-
-                    # world = self._parent.get_world()
-                    self.world.apply_color_texture_to_object(obj, carla.MaterialParameter.Normal, texture)
-                    print(str(obj.attributes))
-
-                    # self.world.apply_color_texture_to_object(obj, carla.MaterialParameter.Normal, texture)
-                    # except:
-                    #     print("couldn't apply texture for " + str(obj))
-
-
-# ==============================================================================
-# -- LaneInvasionSensor --------------------------------------------------------
-# ==============================================================================
+                event.other_actor.set_light_state(carla.VehicleLightState.All)
+                print("turned on all the lignts on "+str(other_actor))
 
 
 class LaneInvasionSensor(object):
@@ -1099,12 +1008,6 @@ class LaneInvasionSensor(object):
         text = ["%r" % str(x).split()[-1] for x in lane_types]
         self.hud.notification("Crossed line %s" % " and ".join(text))
 
-
-# ==============================================================================
-# -- GnssSensor ----------------------------------------------------------------
-# ==============================================================================
-
-
 class GnssSensor(object):
     def __init__(self, parent_actor):
         self.sensor = None
@@ -1126,12 +1029,6 @@ class GnssSensor(object):
             return
         self.lat = event.latitude
         self.lon = event.longitude
-
-
-# ==============================================================================
-# -- IMUSensor -----------------------------------------------------------------
-# ==============================================================================
-
 
 class IMUSensor(object):
     def __init__(self, parent_actor):
@@ -1165,11 +1062,6 @@ class IMUSensor(object):
             max(limits[0], min(limits[1], math.degrees(sensor_data.gyroscope.z))),
         )
         self.compass = math.degrees(sensor_data.compass)
-
-
-# ==============================================================================
-# -- RadarSensor ---------------------------------------------------------------
-# ==============================================================================
 
 
 class RadarSensor(object):
@@ -1230,11 +1122,6 @@ class RadarSensor(object):
                 persistent_lines=False,
                 color=carla.Color(r, g, b),
             )
-
-
-# ==============================================================================
-# -- CameraManager -------------------------------------------------------------
-# ==============================================================================
 
 
 class CameraManager(object):
@@ -1427,11 +1314,6 @@ class CameraManager(object):
             image.save_to_disk("_out/%08d" % image.frame)
 
 
-# ==============================================================================
-# -- game_loop() ---------------------------------------------------------------
-# ==============================================================================
-
-
 def game_loop(args):
     pygame.init()
     pygame.font.init()
@@ -1453,6 +1335,7 @@ def game_loop(args):
 
             traffic_manager = client.get_trafficmanager()
             traffic_manager.set_synchronous_mode(True)
+            tm_port = traffic_manager.get_port()
         else:
             print("[!] This script was executed in Asynchronous mode. Was this intentional?")
 
@@ -1508,8 +1391,20 @@ def game_loop(args):
                 logging.error(response.error)
             else:
                 vehicles_list.append(response.actor_id)
-        #! ---------------------------------------------------------------------------------
 
+        #! trial to see if we can attach static objects and/or lights to vehicles. it did not work.
+        '''
+        all_vehicle_actors = sim_world.get_actors(vehicles_list)
+        for actor in all_vehicle_actors:
+            spawn_point = actor.get_transform()
+            spawn_point.location.z += 1.0
+            spawn_point.rotation.roll = 0.0
+            spawn_point.rotation.pitch = 0.0
+
+            vendingmachine_bp = sim_world.get_blueprint_library().find('static.prop.vendingmachine')
+            vendingmachine = sim_world.spawn_actor(vendingmachine_bp, spawn_point, attach_to=actor, attachment_type=carla.AttachmentType.Rigid)
+        '''
+        #! ---------------------------------------------------------------------------------
         display = pygame.display.set_mode((args.width, args.height), pygame.HWSURFACE | pygame.DOUBLEBUF)
         display.fill((0, 0, 0))
         pygame.display.flip()
@@ -1530,7 +1425,7 @@ def game_loop(args):
         default_message = "No volcanoes yet."
         hero_message = "THERE IS A VOLCANO."
 
-        # TODO update to include pedestrians and (eventually) semantic nodes
+        # TODO #2 update to include pedestrians and (eventually) semantic nodes
         # . find all vehicles
         all_vehicle_actors = sim_world.get_actors(vehicles_list)
         # filters: walker.pedestrian.* vehicle.*
@@ -1577,7 +1472,9 @@ def game_loop(args):
 
         print("\ndestroying %d vehicles" % len(vehicles_list))
         client.apply_batch([carla.command.DestroyActor(x) for x in vehicles_list])
-        # TODO properly destroy sensors when quitting
+
+        # TODO #3 properly destroy obstacle sensors when exiting client
+        print("the following warnings are because can't figure out how to properly destroy the sensors i created:")
         # client.apply_batch([carla.command.DestroyActor(x) for x in sensor_list])
 
         if world and world.recording_enabled:
@@ -1586,14 +1483,10 @@ def game_loop(args):
         if world is not None:
             world.destroy()
 
-        AWayNet_list.clear()  # . holds data structures for each AWayNet-compatible actor
+        #. holds data structures for each AWayNet-compatible actor
+        AWayNet_list.clear()
 
         pygame.quit()
-
-
-# ==============================================================================
-# -- main() --------------------------------------------------------------------
-# ==============================================================================
 
 
 def main():
