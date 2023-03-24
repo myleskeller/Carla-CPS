@@ -76,8 +76,6 @@ try:
 except IndexError:
     pass
 
-
-
 import carla
 
 from carla import ColorConverter as cc
@@ -141,24 +139,31 @@ try:
 except ImportError:
     raise RuntimeError("cannot import numpy, make sure numpy package is installed")
 
-#! literally just for changing texture colors..
-from PIL import Image
+import time
 
-#! because i can't figure out how to pass client into sensor without maiing it global
+number_of_walkers = 50
+number_of_vehicles = 5
 tm_port = 8000
+vehicle_obstacle_distance = 10
+walker_obstacle_distance = 5
+node_obstacle_distance = 50 #. for now assuming that these include powered infrastructure
+fps = 0
+first_contact = False
+final_contact = False
+default_message = "No volcanoes yet."
+hero_message = "THERE IS A VOLCANO."
+start_time = 0
+
 
 #! ==============================================================================
 #! declaring data structure to hold AWayNet stuff
 
-
 class AWayNet:
-    message = ""  # ? maybe redefine as empty list?
+    message = ""
 
     def __init__(self, message, timestamp):
         self.message = message
         self.timestamp = timestamp
-        # print("timestamp as of now is " + str(self.timestamp))
-        # self.timestamp = carla.Timestamp #? did this work?
 
     def setMessage(self, message, timestamp):
         self.message = message
@@ -171,14 +176,91 @@ class AWayNet:
         return self.timestamp
 
     def isNewerThan(self, other_actor):
-        return self.timestamp > other_actor.getTimestamp()  # ? is it > or <?
-        # return self.timestamp.__eq__
+        return self.timestamp > other_actor.getTimestamp()
 
     def print(self):
         return str("msg:'" + self.message + "', timestamp:" + str(self.timestamp))
 
 
-AWayNet_list = dict()  #! holds data structures for each AWayNet-compatible actor
+AWayNet_list = dict()  #. holds data structures for each AWayNet-compatible actor
+
+def drawBoxesAroundPropagatedActors(world, originActor, actorIDList):
+    global fps
+    if fps != 0:
+        _fps = fps
+    else:
+        _fps = 30
+
+    actors = world.get_actors()
+    for actor in actors:
+        if actor.id in AWayNet_list:
+            # . selects actors that have NOT received new message
+            if actorIDList[originActor].isNewerThan(actorIDList[actor.id]):
+                #. draws a fancy boundarybox in woreframe. nolonger needed.
+                '''
+                # world.debug.draw_box(
+                #     carla.BoundingBox(                                                              #.box
+                #         actor.get_transform().location,                                             #.  ---> location
+                #         carla.Vector3D(actor.bounding_box.extent*1.25)),                            #.  ---> extent
+
+                #     actor.get_transform().rotation,                                                 #.rotation
+                #     0.05,                                                                           #.thickness
+                #     carla.Color(255,0,0,0),                                                         #.color
+                #     1                                                                               #.life_time
+                #     )
+                '''
+
+                actor_transform = actor.get_transform()
+                actor_transform.location.z += 3.0
+
+                world.debug.draw_point(
+                    actor_transform.location,
+                    size= 0.125,
+                    life_time=math.sqrt((1/_fps)),
+                    color=carla.Color(255,0,0,0)
+                )
+            # . selects actors that have received new message
+            else:
+                actor_transform = actor.get_transform()
+                actor_transform.location.z += 3.0
+
+                #. draws cube above awaynet participants to indicate update status
+                world.debug.draw_point(
+                    actor_transform.location,
+                    size= 0.125,
+                    life_time=math.sqrt((1/_fps)),
+                    color=carla.Color(0,255,0,0)
+                )
+
+def checkPropagationStatus(actorIDList, debug):
+    global first_contact
+    global final_contact
+    global hero_message
+    global start_time
+
+    if first_contact == False or final_contact == False:
+        contacted_actors = 0
+        for actor in actorIDList:
+            if actorIDList[actor].getMessage() == hero_message:
+                contacted_actors = contacted_actors + 1
+
+        if contacted_actors == 2 and first_contact == False:
+            print("first contact made.")
+            first_contact = True
+            #. start timer
+            start_time = time.time()
+
+        elif contacted_actors == len(actorIDList) and final_contact == False:
+            print("final contact made.")
+            final_contact = True
+            #. stop timer
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print("#================================================================")
+            print("Total propagation time: "+str(round(elapsed_time)))
+            print("#================================================================")
+            text = "================================================================ \nTotal propagation time: "+str(round(elapsed_time))+"\n================================================================"
+        print(str(contacted_actors)+"/"+str(len(actorIDList)))
 #! ==============================================================================
 
 
@@ -313,7 +395,7 @@ class World(object):
             self.modify_vehicle_physics(self.player)
         # Set up the sensors.
         self.collision_sensor = CollisionSensor(self.player, self.hud)
-        self.obstacle_sensor = AObstacleDetectionSensor(self.player)  ##, self.hud)
+        self.obstacle_sensor = AObstacleDetectionSensor(self.player, vehicle_obstacle_distance)  ##, self.hud)
         self.lane_invasion_sensor = LaneInvasionSensor(self.player, self.hud)
         self.gnss_sensor = GnssSensor(self.player)
         self.imu_sensor = IMUSensor(self.player)
@@ -334,13 +416,6 @@ class World(object):
         preset = self._weather_presets[self._weather_index]
         self.hud.notification("Weather: %s" % preset[1])
         self.player.get_world().set_weather(preset[0])
-
-        #. turns off all of the lights in the map
-        '''
-        light_manager = self.player.get_world().get_lightmanager()
-        all_lights = light_manager.get_all_lights()
-        light_manager.turn_off(all_lights)
-        '''
 
     def next_map_layer(self, reverse=False):
         self.current_map_layer += -1 if reverse else 1
@@ -375,6 +450,7 @@ class World(object):
 
     def tick(self, clock):
         self.hud.tick(self, clock)
+        # print(self.player.get_transform())
 
     def render(self, display):
         self.camera_manager.render(display)
@@ -722,7 +798,8 @@ class HUD(object):
 
     def on_world_tick(self, timestamp):
         self._server_clock.tick()
-        self.server_fps = self._server_clock.get_fps()
+        global fps
+        self.server_fps = fps = self._server_clock.get_fps()
         self.frame = timestamp.frame
         self.simulation_time = timestamp.elapsed_seconds
 
@@ -731,6 +808,7 @@ class HUD(object):
         if not self._show_info:
             return
         t = world.player.get_transform()
+        # print(t)
         v = world.player.get_velocity()
         c = world.player.get_control()
         compass = world.imu_sensor.compass
@@ -929,11 +1007,10 @@ class CollisionSensor(object):
 
 
 class AObstacleDetectionSensor(object):
-    def __init__(self, parent_actor):  ##, hud):
+    def __init__(self, parent_actor, hit_radius):
         self.sensor = None
         self.history = []
         self._parent = parent_actor
-        ## self.hud = hud
         world = self.world = self._parent.get_world()
         self.debug = world.debug
 
@@ -942,7 +1019,7 @@ class AObstacleDetectionSensor(object):
         bp.set_attribute("only_dynamics", str(True))  # . only applies to 'dynamic' objects
         bp.set_attribute("debug_linetrace", str(False))  #! ☠️☠️☠️'True' will bring the fps down to like 1
         bp.set_attribute("distance", str(1))  # . '1' should convert capsule to sphere
-        bp.set_attribute("hit_radius", str(10))  # ? in meters?
+        bp.set_attribute("hit_radius", str(hit_radius))  # ? in meters?
 
         self.sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self._parent)
         # . We need to pass the lambda a weak reference to self to avoid circular reference.
@@ -951,6 +1028,7 @@ class AObstacleDetectionSensor(object):
 
     @staticmethod
     def _on_obstacle(weak_self, event):
+        global start_time
         self = weak_self()
         if not self:
             return
@@ -963,7 +1041,6 @@ class AObstacleDetectionSensor(object):
         other_actor = event.other_actor.id
 
         if other_actor in AWayNet_list:  # . prevents error when 'other_actor' isn't in 'AWayNet_list'
-            # . which would be the case if the obstacle isn't a vehicle
 
             # . check to see if other_actor's info is outdated
             if AWayNet_list[detector_actor].isNewerThan(AWayNet_list[other_actor]):
@@ -975,13 +1052,23 @@ class AObstacleDetectionSensor(object):
                 )
                 print(str(other_actor) + " updated to " + AWayNet_list[other_actor].print())
 
-                #. opens doors and illuminates all equipped lights of propagated actors
+                #. display time actor was contact at coordinates of interaction
+                other_actor_location = event.other_actor.get_location()
+                detector_actor_location = event.actor.parent.get_location()
+                other_actor_location.z += 10.0
+                text = str(round(time.time()-start_time))+"s"
+                self.debug.draw_string(other_actor_location, text, draw_shadow=True, color=carla.Color(255,0,0), life_time=60)
+
+                # #. opens doors and illuminates all equipped lights of propagated actors. no longer needed.
+                '''
                 event.other_actor.open_door(carla.VehicleDoor.All)
                 print("opened all doors on "+str(other_actor))
 
                 event.other_actor.set_light_state(carla.VehicleLightState.All)
                 print("turned on all the lignts on "+str(other_actor))
+                '''
 
+                checkPropagationStatus(AWayNet_list, self.debug)
 
 class LaneInvasionSensor(object):
     def __init__(self, parent_actor, hud):
@@ -1063,7 +1150,6 @@ class IMUSensor(object):
         )
         self.compass = math.degrees(sensor_data.compass)
 
-
 class RadarSensor(object):
     def __init__(self, parent_actor):
         self.sensor = None
@@ -1122,7 +1208,6 @@ class RadarSensor(object):
                 persistent_lines=False,
                 color=carla.Color(r, g, b),
             )
-
 
 class CameraManager(object):
     def __init__(self, parent_actor, hud, gamma_correction):
@@ -1325,6 +1410,10 @@ def game_loop(args):
         client.set_timeout(2000.0)
 
         sim_world = client.get_world()
+
+        if len(sim_world.get_actors().filter("sensor.other.obstacle")) == 0:
+            print("don't listen to her. all of the old sensors were successfully deleted.")
+
         if args.sync:
             original_settings = sim_world.get_settings()
             settings = sim_world.get_settings()
@@ -1347,7 +1436,7 @@ def game_loop(args):
 
         #! adding vehicle generation here -----------------------------------------------
         vehicles_list = []
-        number_of_vehicles = 30
+        global number_of_vehicles
 
         print("Spawning " + str(number_of_vehicles) + " vehicles")
         blueprints = get_actor_blueprints(sim_world, "vehicle.*", "All")
@@ -1372,6 +1461,10 @@ def game_loop(args):
             if n >= number_of_vehicles:
                 break
             blueprint = random.choice(blueprints)
+            while blueprint.has_attribute("has_lights") == False:
+                blueprint = random.choice(blueprints)
+
+
             if blueprint.has_attribute("color"):
                 color = random.choice(blueprint.get_attribute("color").recommended_values)
                 blueprint.set_attribute("color", color)
@@ -1380,6 +1473,7 @@ def game_loop(args):
                 blueprint.set_attribute("driver_id", driver_id)
             else:
                 blueprint.set_attribute("role_name", "autopilot")
+
 
             # . spawn the cars and set their autopilot and light state all together
             batch.append(
@@ -1392,19 +1486,90 @@ def game_loop(args):
             else:
                 vehicles_list.append(response.actor_id)
 
-        #! trial to see if we can attach static objects and/or lights to vehicles. it did not work.
-        '''
-        all_vehicle_actors = sim_world.get_actors(vehicles_list)
-        for actor in all_vehicle_actors:
-            spawn_point = actor.get_transform()
-            spawn_point.location.z += 1.0
-            spawn_point.rotation.roll = 0.0
-            spawn_point.rotation.pitch = 0.0
-
-            vendingmachine_bp = sim_world.get_blueprint_library().find('static.prop.vendingmachine')
-            vendingmachine = sim_world.spawn_actor(vendingmachine_bp, spawn_point, attach_to=actor, attachment_type=carla.AttachmentType.Rigid)
-        '''
         #! ---------------------------------------------------------------------------------
+        #! adding walker generation here ---------------------------------------------------
+        walkers_list = []
+        all_id = []
+        global number_of_walkers
+
+        blueprintsWalkers = get_actor_blueprints(sim_world, "walker.pedestrian.*", "2")
+
+        percentagePedestriansRunning = 0.0      # how many pedestrians will run
+        percentagePedestriansCrossing = 0.0     # how many pedestrians will walk through the road
+
+        spawn_points = []
+        for i in range(number_of_walkers):
+            spawn_point = carla.Transform()
+            loc = sim_world.get_random_location_from_navigation()
+            if (loc != None):
+                spawn_point.location = loc
+                spawn_points.append(spawn_point)
+        # 2. we spawn the walker object
+        batch = []
+        walker_speed = []
+        for spawn_point in spawn_points:
+            walker_bp = random.choice(blueprintsWalkers)
+            # set as not invincible
+            if walker_bp.has_attribute('is_invincible'):
+                walker_bp.set_attribute('is_invincible', 'false')
+            # set the max speed
+            if walker_bp.has_attribute('speed'):
+                if (random.random() > percentagePedestriansRunning):
+                    # walking
+                    walker_speed.append(walker_bp.get_attribute('speed').recommended_values[1])
+                else:
+                    # running
+                    walker_speed.append(walker_bp.get_attribute('speed').recommended_values[2])
+            else:
+                print("Walker has no speed")
+                walker_speed.append(0.0)
+            batch.append(SpawnActor(walker_bp, spawn_point))
+        results = client.apply_batch_sync(batch, True)
+        walker_speed2 = []
+        for i in range(len(results)):
+            if results[i].error:
+                logging.error(results[i].error)
+            else:
+                walkers_list.append({"id": results[i].actor_id})
+                walker_speed2.append(walker_speed[i])
+        walker_speed = walker_speed2
+        # 3. we spawn the walker controller
+        batch = []
+        walker_controller_bp = sim_world.get_blueprint_library().find('controller.ai.walker')
+        for i in range(len(walkers_list)):
+            batch.append(SpawnActor(walker_controller_bp, carla.Transform(), walkers_list[i]["id"]))
+        results = client.apply_batch_sync(batch, True)
+        for i in range(len(results)):
+            if results[i].error:
+                logging.error(results[i].error)
+            else:
+                walkers_list[i]["con"] = results[i].actor_id
+        # 4. we put together the walkers and controllers id to get the objects from their id
+        for i in range(len(walkers_list)):
+            all_id.append(walkers_list[i]["con"])
+            all_id.append(walkers_list[i]["id"])
+        all_actors = sim_world.get_actors(all_id)
+
+        if args.sync:
+            sim_world.tick()
+        else:
+            sim_world.wait_for_tick()
+
+        # 5. initialize each controller and set target to walk to (list is [controler, actor, controller, actor ...])
+        # set how many pedestrians can cross the road
+        sim_world.set_pedestrians_cross_factor(percentagePedestriansCrossing)
+        for i in range(0, len(all_id), 2):
+            # start walker
+            all_actors[i].start()
+            # set walk to random point
+            all_actors[i].go_to_location(sim_world.get_random_location_from_navigation())
+            # max speed
+            all_actors[i].set_max_speed(float(walker_speed[int(i/2)]))
+
+        print('spawned %d vehicles and %d walkers, press Ctrl+C to exit.' % (len(vehicles_list), len(walkers_list)))
+        #! ---------------------------------------------------------------------------------
+
+
         display = pygame.display.set_mode((args.width, args.height), pygame.HWSURFACE | pygame.DOUBLEBUF)
         display.fill((0, 0, 0))
         pygame.display.flip()
@@ -1421,15 +1586,19 @@ def game_loop(args):
         clock = pygame.time.Clock()
 
         #! ---------------------------------------------------------------------------------
+        #! more awaynet stuff --------------------------------------------------------------
         sensor_list = []
-        default_message = "No volcanoes yet."
-        hero_message = "THERE IS A VOLCANO."
+        global default_message
+        global hero_message
 
-        # TODO #2 update to include pedestrians and (eventually) semantic nodes
-        # . find all vehicles
+        # TODO #5 store state from carla.TrafficLight.get_state() in AWayNet data structure
+        # carla.TrafficLightState()
+
+        # TODO #2 update to include semantic nodes
+        #. find all actors in world
         all_vehicle_actors = sim_world.get_actors(vehicles_list)
-        # filters: walker.pedestrian.* vehicle.*
-        # sim_world.get_actors()
+        all_walker_actors = sim_world.get_actors().filter("walker.pedestrian.*")
+        all_nodes = sim_world.get_actors().filter("???")
 
         # . finds all vehicles and creates accompanying AWayNet data structure
         for actor in all_vehicle_actors:
@@ -1437,28 +1606,78 @@ def game_loop(args):
             timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds - 500.0
             AWayNet_list[actor.id] = AWayNet(default_message, timestamp)
 
-            # . create obstacle detection sensor and attach sensor to vehicle (parent actor)
-            obstacle_sensor = AObstacleDetectionSensor(actor)
+            #. create obstacle detection sensor and attach sensor to vehicle (parent actor)
+            obstacle_sensor = AObstacleDetectionSensor(actor, vehicle_obstacle_distance)
+
             # . add to sensor_list so we can keep accountability when destroying (currently broken)
             sensor_list.append(obstacle_sensor)
 
-        # . finds hero and creates accompanying AWayNet data structure
+        # . finds all walkers and creates accompanying AWayNet data structure
+        for actor in all_walker_actors:
+            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
+            timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds - 500.0
+            AWayNet_list[actor.id] = AWayNet(default_message, timestamp)
+
+            #. create obstacle detection sensor and attach sensor to walker (parent actor)
+            obstacle_sensor = AObstacleDetectionSensor(actor, walker_obstacle_distance)
+
+            # . add to sensor_list so we can keep accountability when destroying (currently broken)
+            sensor_list.append(obstacle_sensor)
+
+        # . finds all walkers and creates accompanying AWayNet data structure
+        for actor in all_nodes:
+            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
+            timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds - 500.0
+            AWayNet_list[actor.id] = AWayNet(default_message, timestamp)
+
+            #. create obstacle detection sensor and attach sensor to nodes (parent actor)
+            obstacle_sensor = AObstacleDetectionSensor(actor, node_obstacle_distance)
+
+            # . add to sensor_list so we can keep accountability when destroying (currently broken)
+            sensor_list.append(obstacle_sensor)
+
+        # . finds hero and creates accompanying AWayNet data structure. likely temporary.
         for actor in sim_world.get_actors():
             if actor.attributes.get("role_name") == "hero":
                 hero_timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds
                 # . we give the hero a unique message and timestamp so that the message proapgates
                 AWayNet_list[actor.id] = AWayNet(hero_message, hero_timestamp)
                 print("the hero is ID " + str(actor.id) + ".")
+                heroID = actor.id #. used later to keep track of "patient zero" message
                 break
 
         # . debug prints
         for key, value in AWayNet_list.items():
             print(str(key) + ": " + value.print())
+
+        #. sets weather
+        # sim_world.set_weather(carla.WeatherParameters.ClearNight)
+        # sim_world.set_weather(carla.WeatherParameters.ClearNoon)
+        sim_world.set_weather(carla.WeatherParameters.ClearSunset)
+
+        #. turns off all of the lights in the map
+        # light_manager = sim_world.get_lightmanager()
+        # all_lights = light_manager.get_all_lights()
+        # light_manager.turn_off(all_lights)
+
+        #. turns off all of the lights on each vehicle
+        # for actor in all_vehicle_actors:
+        #     actor.set_light_state(carla.VehicleLightState.NONE)
+
+        #. positions spectator in top-down view
+        spectator = sim_world.get_spectator()
+        spectator.set_transform(carla.Transform(carla.Location(x=4.635590, y=36.175838, z=192.364319), carla.Rotation(pitch=-90, yaw=-0, roll=-90)))
+
+        #. positions player (ego) out of the way so we control introduction time of new message
+        for actor in sim_world.get_actors():
+            if actor.attributes.get("role_name") == "hero":
+                actor.set_transform(carla.Transform(carla.Location(x=136.513748, y=95.039558, z=0.090692), carla.Rotation(pitch=0.006557, yaw=-179.795471, roll=-0.041992)))
         #! ---------------------------------------------------------------------------------
 
         while True:
             if args.sync:
                 sim_world.tick()
+                drawBoxesAroundPropagatedActors(sim_world, heroID, AWayNet_list)
             clock.tick_busy_loop(60)
             if controller.parse_events(client, world, clock, args.sync):
                 return
@@ -1473,9 +1692,18 @@ def game_loop(args):
         print("\ndestroying %d vehicles" % len(vehicles_list))
         client.apply_batch([carla.command.DestroyActor(x) for x in vehicles_list])
 
-        # TODO #3 properly destroy obstacle sensors when exiting client
-        print("the following warnings are because can't figure out how to properly destroy the sensors i created:")
-        # client.apply_batch([carla.command.DestroyActor(x) for x in sensor_list])
+        print('\ndestroying %d walkers' % len(walkers_list))
+        client.apply_batch([carla.command.DestroyActor(x) for x in all_id])
+
+        #. properly destroy obstacle sensors when exiting client (unnecessary, apparently?)
+        '''
+        obstacle_sensors = sim_world.get_actors().filter("sensor.other.obstacle")
+        for sensor in obstacle_sensors:
+            sensor.stop()
+        client.apply_batch([carla.command.DestroyActor(x) for x in obstacle_sensors])
+        for sensor in obstacle_sensors:
+            sensor.destroy()
+        '''
 
         if world and world.recording_enabled:
             client.stop_recorder()
