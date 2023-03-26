@@ -158,6 +158,9 @@ hero_message = "THERE IS A VOLCANO."
 start_time = 0
 fps = 0
 
+hud_enabled = False
+traffic_lights_connected = True
+
 obstacle_sensors = []  # . only here to keep carla from (incorrectly) whining about sensors going out of scope
 AWayNet_list = None  # . holds data structures for each AWayNet-compatible actor
 
@@ -206,6 +209,7 @@ class AWayNetList:
     first_contact = False
     final_contact = False
     contacted_actors = 0
+    traffic_lights = None
 
     def getHeroID(self, actor_list=None):
         if actor_list == None:
@@ -263,12 +267,26 @@ class AWayNetList:
 
             AWayNet_list.checkPropagation()
 
-    def timestampsAreDifferent(self, detector_actor, other_actor):
-        print("\n" + str(detector_actor) + "'s message is newer than " + str(other_actor) + "'s")
-        return self.dictionary[detector_actor].getTimestamp() != self.dictionary[other_actor].getTimestamp()
+    def timestampsAreDifferent(self, A, B):
+        print("\n" + str(A) + "'s message is newer than " + str(B) + "'s")
+        return self.dictionary[A].getTimestamp() != self.dictionary[B].getTimestamp()
 
     def checkPropagation(self):
         global start_time
+
+        if traffic_lights_connected:
+            connection_made = False
+            newer_light = None
+            for light in self.traffic_lights:
+                if self.dictionary[light.id].getMessage() == hero_message:
+                    connection_made = True
+                    newer_light = light.id
+                    break
+
+            if connection_made:
+                for light in self.traffic_lights:
+                    self.updateOlderTimestamp(light.id, newer_light)  # ? does this work?
+
         # . most of this will become obsolete as the AWAyNet message data structure evolves
         if self.first_contact == False or self.final_contact == False:
             contacted_actors = 0
@@ -302,12 +320,18 @@ class AWayNetList:
         for key, value in self.dictionary.items():
             print(str(key) + ": " + value.print())
 
+    def clear(self):
+        self.dictionary.clear()
+        self.hero_id = 0
+        self.first_contact = False
+        self.final_contact = False
+        self.contacted_actors = 0
+
     def __init__(self, world):
         # . find all actors in world
         all_vehicle_actors = world.get_actors().filter("vehicle.*")
         all_walker_actors = world.get_actors().filter("walker.pedestrian.*")
-        # TODO update to include semantic nodes
-        all_nodes = world.get_actors().filter("???")
+        self.traffic_lights = world.get_actors().filter("traffic.traffic_light")
         # TODO store state from carla.TrafficLight.get_state() in AWayNet data structure
         # carla.TrafficLightState()
 
@@ -315,13 +339,18 @@ class AWayNetList:
 
         # . finds all vehicles and creates accompanying AWayNet data structure
         for actor in all_vehicle_actors:
-            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
-            timestamp = world.get_snapshot().timestamp.elapsed_seconds - 500.0
-            self.dictionary[actor.id] = AWayNet(default_message, timestamp, actor.id)
+            if actor.id != self.hero_id:
+                # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
+                timestamp = world.get_snapshot().timestamp.elapsed_seconds - 500.0
+                self.dictionary[actor.id] = AWayNet(default_message, timestamp, actor.id)
 
-            # . create obstacle detection sensor and attach sensor to vehicle (parent actor)
-            obstacle_sensor = AObstacleDetectionSensor(actor, vehicle_obstacle_distance)
-            obstacle_sensors.append(obstacle_sensor)
+                # . create obstacle detection sensor and attach sensor to vehicle (parent actor)
+                obstacle_sensor = AObstacleDetectionSensor(actor, vehicle_obstacle_distance)
+                obstacle_sensors.append(obstacle_sensor)
+            else:
+                # . we give the hero a unique message and timestamp so that the message proapgates
+                hero_timestamp = world.get_snapshot().timestamp.elapsed_seconds
+                self.dictionary[self.hero_id] = AWayNet(hero_message, hero_timestamp, actor.id)
 
         # . finds all walkers and creates accompanying AWayNet data structure
         for actor in all_walker_actors:
@@ -333,8 +362,8 @@ class AWayNetList:
             obstacle_sensor = AObstacleDetectionSensor(actor, walker_obstacle_distance)
             obstacle_sensors.append(obstacle_sensor)
 
-        # . finds all walkers and creates accompanying AWayNet data structure
-        for actor in all_nodes:
+        # . finds all traffic lights and creates accompanying AWayNet data structure
+        for actor in self.traffic_lights:
             # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
             timestamp = world.get_snapshot().timestamp.elapsed_seconds - 500.0
             self.dictionary[actor.id] = AWayNet(default_message, timestamp, actor.id)
@@ -342,17 +371,6 @@ class AWayNetList:
             # . create obstacle detection sensor and attach sensor to nodes (parent actor)
             obstacle_sensor = AObstacleDetectionSensor(actor, node_obstacle_distance)
             obstacle_sensors.append(obstacle_sensor)
-
-        # . we give the hero a unique message and timestamp so that the message proapgates
-        hero_timestamp = world.get_snapshot().timestamp.elapsed_seconds
-        self.dictionary[self.hero_id] = AWayNet(hero_message, hero_timestamp, actor.id)
-
-    def clear(self):
-        self.dictionary.clear()
-        self.hero_id = 0
-        self.first_contact = False
-        self.final_contact = False
-        self.contacted_actors = 0
 
 
 def renderCubeOverPropagatedActors(world, originActor, actorIDList):
@@ -550,6 +568,9 @@ def prepare_scenario(sim_world):
                 )
             )
 
+    # for actor in sim_world.get_actors():
+    #     print(actor.type_id)
+
 
 #! ==============================================================================
 
@@ -683,12 +704,12 @@ class World(object):
             self.player = self.world.try_spawn_actor(blueprint, spawn_point)
             self.show_vehicle_telemetry = False
             self.modify_vehicle_physics(self.player)
-        # Set up the sensors.
-        self.collision_sensor = CollisionSensor(self.player, self.hud)
-        self.obstacle_sensor = AObstacleDetectionSensor(self.player, vehicle_obstacle_distance)  ##, self.hud)
-        self.lane_invasion_sensor = LaneInvasionSensor(self.player, self.hud)
-        self.gnss_sensor = GnssSensor(self.player)
-        self.imu_sensor = IMUSensor(self.player)
+        # . Set up the sensors.
+        # self.collision_sensor = CollisionSensor(self.player, self.hud)
+        # self.lane_invasion_sensor = LaneInvasionSensor(self.player, self.hud)
+        # self.gnss_sensor = GnssSensor(self.player)
+        # self.imu_sensor = IMUSensor(self.player)
+        self.obstacle_sensor = AObstacleDetectionSensor(self.player, vehicle_obstacle_distance)
         self.camera_manager = CameraManager(self.player, self.hud, self._gamma)
         self.camera_manager.transform_index = cam_pos_index
         self.camera_manager.set_sensor(cam_index, notify=False)
@@ -740,7 +761,6 @@ class World(object):
 
     def tick(self, clock):
         self.hud.tick(self, clock)
-        # print(self.player.get_transform())
 
     def render(self, display):
         self.camera_manager.render(display)
@@ -756,11 +776,11 @@ class World(object):
             self.toggle_radar()
         sensors = [
             self.camera_manager.sensor,
-            self.collision_sensor.sensor,
             self.obstacle_sensor.sensor,
-            self.lane_invasion_sensor.sensor,
-            self.gnss_sensor.sensor,
-            self.imu_sensor.sensor,
+            # self.collision_sensor.sensor,
+            # self.lane_invasion_sensor.sensor,
+            # self.gnss_sensor.sensor,
+            # self.imu_sensor.sensor,
         ]
         for sensor in sensors:
             if sensor is not None:
@@ -1069,8 +1089,13 @@ class KeyboardControl(object):
 
 
 class HUD(object):
+    global hud_enabled
+
     def __init__(self, width, height):
         self.dim = (width, height)
+        if not hud_enabled:
+            return
+
         font = pygame.font.Font(pygame.font.get_default_font(), 20)
         font_name = "courier" if os.name == "nt" else "mono"
         fonts = [x for x in pygame.font.get_fonts() if font_name in x]
@@ -1091,6 +1116,9 @@ class HUD(object):
         self._ackermann_control = carla.VehicleAckermannControl()
 
     def on_world_tick(self, timestamp):
+        if not hud_enabled:
+            return
+
         self._server_clock.tick()
         global fps
         self.server_fps = fps = self._server_clock.get_fps()
@@ -1098,6 +1126,9 @@ class HUD(object):
         self.simulation_time = timestamp.elapsed_seconds
 
     def tick(self, world, clock):
+        if not hud_enabled:
+            return
+
         self._notifications.tick(world, clock)
         if not self._show_info:
             return
@@ -1170,21 +1201,39 @@ class HUD(object):
                 self._info_text.append("% 4dm %s" % (d, vehicle_type))
 
     def show_ackermann_info(self, enabled):
+        if not hud_enabled:
+            return
+
         self._show_ackermann_info = enabled
 
     def update_ackermann_control(self, ackermann_control):
+        if not hud_enabled:
+            return
+
         self._ackermann_control = ackermann_control
 
     def toggle_info(self):
+        if not hud_enabled:
+            return
+
         self._show_info = not self._show_info
 
     def notification(self, text, seconds=2.0):
+        if not hud_enabled:
+            return
+
         self._notifications.set_text(text, seconds=seconds)
 
     def error(self, text):
+        if not hud_enabled:
+            return
+
         self._notifications.set_text("Error: %s" % text, (255, 0, 0))
 
     def render(self, display):
+        if not hud_enabled:
+            return
+
         if self._show_info:
             info_surface = pygame.Surface((220, self.dim[1]))
             info_surface.set_alpha(100)
@@ -1321,12 +1370,12 @@ class AObstacleDetectionSensor(object):
         bp = world.get_blueprint_library().find("sensor.other.obstacle")
 
         bp.set_attribute("only_dynamics", str(True))  # . only applies to 'dynamic' objects
-        bp.set_attribute("debug_linetrace", str(False))  #! ☠️☠️☠️ setting to 'True' murders fps
-        bp.set_attribute("distance", str(1))  # . '1' should convert capsule to sphere
+        bp.set_attribute("debug_linetrace", str(False))  #! ☠️☠️☠️ setting to 'True' absolutely murders fps
+        bp.set_attribute("distance", str(1))  # . '1' should convert capsule to semi-sphere
         bp.set_attribute("hit_radius", str(hit_radius))  # ? in meters?
 
         self.sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self._parent)
-        # . We need to pass the lambda a weak reference to self to avoid circular reference.
+        # . passing lambda weak reference to self to avoid circular reference
         weak_self = weakref.ref(self)
         self.sensor.listen(lambda event: AObstacleDetectionSensor._on_obstacle(weak_self, event))
 
@@ -1337,9 +1386,9 @@ class AObstacleDetectionSensor(object):
         if not self:
             return
 
-        # other_actor = get_actor_display_name(event.other_actor)  #. Actor detected as an obstacle.
-        # actor = get_actor_display_name(event.actor) #. Actor that detected the obstacle (will be the obstacle sensor, not the parent).
-        # distance = event.distance #. Distance from actor to other_actor.
+        # other_actor = get_actor_display_name(event.other_actor)  #. Actor detected as an obstacle
+        # actor = get_actor_display_name(event.actor) #. Actor that detected the obstacle (will be the obstacle sensor, not the parent)
+        # distance = event.distance #. Distance from actor to other_actor
 
         detector_actor = event.actor.parent.id
         other_actor = event.other_actor.id
