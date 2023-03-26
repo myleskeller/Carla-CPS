@@ -70,7 +70,11 @@ try:
     sys.path.append(
         glob.glob(
             "../carla/dist/carla-*%d.%d-%s.egg"
-            % (sys.version_info.major, sys.version_info.minor, "win-amd64" if os.name == "nt" else "linux-x86_64")
+            % (
+                sys.version_info.major,
+                sys.version_info.minor,
+                "win-amd64" if os.name == "nt" else "linux-x86_64",
+            )
         )[0]
     )
 except IndexError:
@@ -143,27 +147,30 @@ import time
 
 number_of_walkers = 50
 number_of_vehicles = 5
-tm_port = 8000
+
 vehicle_obstacle_distance = 10
 walker_obstacle_distance = 5
-node_obstacle_distance = 50 #. for now assuming that these include powered infrastructure
-fps = 0
-first_contact = False
-final_contact = False
+node_obstacle_distance = 50  # . for now assuming that these include powered infrastructure
+
 default_message = "No volcanoes yet."
 hero_message = "THERE IS A VOLCANO."
+
 start_time = 0
+fps = 0
 
+obstacle_sensors = []  # . only here to keep carla from (incorrectly) whining about sensors going out of scope
+AWayNet_list = None  # . holds data structures for each AWayNet-compatible actor
 
-#! ==============================================================================
-#! declaring data structure to hold AWayNet stuff
 
 class AWayNet:
-    message = ""
-
-    def __init__(self, message, timestamp):
+    def __init__(self, message, timestamp, id):
+        global start_time
+        self.id = id
         self.message = message
         self.timestamp = timestamp
+        self.last_update_time = time.time() - start_time
+        self.last_update_actor = None
+        self.last_near = None
 
     def setMessage(self, message, timestamp):
         self.message = message
@@ -175,17 +182,184 @@ class AWayNet:
     def getTimestamp(self):
         return self.timestamp
 
+    def setLastUpdateInfo(self, actor):
+        global start_time
+        self.last_update_time = time.time() - start_time
+        self.last_update_actor = actor
+
     def isNewerThan(self, other_actor):
+        if self.timestamp > other_actor.getTimestamp():
+            other_actor.setLastUpdateInfo(self.id)
         return self.timestamp > other_actor.getTimestamp()
 
     def print(self):
         return str("msg:'" + self.message + "', timestamp:" + str(self.timestamp))
 
 
-AWayNet_list = dict()  #. holds data structures for each AWayNet-compatible actor
+class AWayNetList:
+    global default_message
+    global hero_message
+    global start_time
 
-def drawBoxesAroundPropagatedActors(world, originActor, actorIDList):
+    dictionary = dict()
+    hero_id = 0
+    first_contact = False
+    final_contact = False
+    contacted_actors = 0
+
+    def getHeroID(self, actor_list=None):
+        if actor_list == None:
+            return self.hero_id
+        else:
+            for actor in actor_list:
+                if actor.attributes.get("role_name") == "hero":
+                    self.hero_id = actor.id
+                    print("the hero is ID " + str(actor.id) + ".")
+                    return actor.id
+
+    def containsActor(self, actor_id):
+        return actor_id in self.dictionary.keys()
+
+    def getAllParticipantIDs(self):
+        return list(self.dictionary.keys())
+
+    def updateOlderTimestamp(self, A, B):
+        global start_time
+        if self.dictionary[A].isNewerThan(self.dictionary[B]):
+            self.dictionary[B].setMessage(
+                self.dictionary[A].getMessage(),
+                self.dictionary[A].getTimestamp(),
+            )
+            print(
+                str(B)
+                + ' updated to "'
+                + self.dictionary[B].getMessage()
+                + '" by '
+                + str(A)
+                + " @"
+                + str(round(time.time() - start_time))
+                + "s"
+            )
+
+            AWayNet_list.checkPropagation()
+
+        elif self.dictionary[B].isNewerThan(self.dictionary[A]):
+            # . if it is out of date, assign it the message from detector_actor to other_actor
+            self.dictionary[A].setMessage(
+                self.dictionary[B].getMessage(),
+                self.dictionary[B].getTimestamp(),
+            )
+
+            print(
+                str(A)
+                + ' updated to "'
+                + self.dictionary[A].getMessage()
+                + '" by '
+                + str(B)
+                + " @"
+                + str(round(time.time() - start_time))
+                + "s"
+            )
+
+            AWayNet_list.checkPropagation()
+
+    def timestampsAreDifferent(self, detector_actor, other_actor):
+        print("\n" + str(detector_actor) + "'s message is newer than " + str(other_actor) + "'s")
+        return self.dictionary[detector_actor].getTimestamp() != self.dictionary[other_actor].getTimestamp()
+
+    def checkPropagation(self):
+        global start_time
+        # . most of this will become obsolete as the AWAyNet message data structure evolves
+        if self.first_contact == False or self.final_contact == False:
+            contacted_actors = 0
+            for actor in self.dictionary:
+                if self.dictionary[actor].getMessage() == hero_message:
+                    contacted_actors = contacted_actors + 1
+
+            if self.contacted_actors != contacted_actors:
+                print(str(contacted_actors) + "/" + str(len(self.dictionary)))
+                self.contacted_actors = contacted_actors
+
+            if contacted_actors == 2 and self.first_contact == False:
+                print("#================================================================")
+                print("first contact made.")
+                print("#================================================================")
+                self.first_contact = True
+                # . start timer
+                start_time = time.time()
+
+            elif contacted_actors == len(self.dictionary) and self.final_contact == False:
+                self.final_contact = True
+                # . stop timer
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                print("#================================================================")
+                print("final contact made.")
+                print("Total propagation time: " + str(round(elapsed_time)))
+                print("#================================================================")
+
+    def print(self):
+        for key, value in self.dictionary.items():
+            print(str(key) + ": " + value.print())
+
+    def __init__(self, world):
+        # . find all actors in world
+        all_vehicle_actors = world.get_actors().filter("vehicle.*")
+        all_walker_actors = world.get_actors().filter("walker.pedestrian.*")
+        # TODO update to include semantic nodes
+        all_nodes = world.get_actors().filter("???")
+        # TODO store state from carla.TrafficLight.get_state() in AWayNet data structure
+        # carla.TrafficLightState()
+
+        self.getHeroID(all_vehicle_actors)
+
+        # . finds all vehicles and creates accompanying AWayNet data structure
+        for actor in all_vehicle_actors:
+            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
+            timestamp = world.get_snapshot().timestamp.elapsed_seconds - 500.0
+            self.dictionary[actor.id] = AWayNet(default_message, timestamp, actor.id)
+
+            # . create obstacle detection sensor and attach sensor to vehicle (parent actor)
+            obstacle_sensor = AObstacleDetectionSensor(actor, vehicle_obstacle_distance)
+            obstacle_sensors.append(obstacle_sensor)
+
+        # . finds all walkers and creates accompanying AWayNet data structure
+        for actor in all_walker_actors:
+            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
+            timestamp = world.get_snapshot().timestamp.elapsed_seconds - 500.0
+            self.dictionary[actor.id] = AWayNet(default_message, timestamp, actor.id)
+
+            # . create obstacle detection sensor and attach sensor to walker (parent actor)
+            obstacle_sensor = AObstacleDetectionSensor(actor, walker_obstacle_distance)
+            obstacle_sensors.append(obstacle_sensor)
+
+        # . finds all walkers and creates accompanying AWayNet data structure
+        for actor in all_nodes:
+            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
+            timestamp = world.get_snapshot().timestamp.elapsed_seconds - 500.0
+            self.dictionary[actor.id] = AWayNet(default_message, timestamp, actor.id)
+
+            # . create obstacle detection sensor and attach sensor to nodes (parent actor)
+            obstacle_sensor = AObstacleDetectionSensor(actor, node_obstacle_distance)
+            obstacle_sensors.append(obstacle_sensor)
+
+        # . we give the hero a unique message and timestamp so that the message proapgates
+        hero_timestamp = world.get_snapshot().timestamp.elapsed_seconds
+        self.dictionary[self.hero_id] = AWayNet(hero_message, hero_timestamp, actor.id)
+
+    def clear(self):
+        self.dictionary.clear()
+        self.hero_id = 0
+        self.first_contact = False
+        self.final_contact = False
+        self.contacted_actors = 0
+
+
+def renderCubeOverPropagatedActors(world, originActor, actorIDList):
+    # . this whole function will change depending on how many variants of the message there are
     global fps
+    global AWayNet_list
+
     if fps != 0:
         _fps = fps
     else:
@@ -193,74 +367,190 @@ def drawBoxesAroundPropagatedActors(world, originActor, actorIDList):
 
     actors = world.get_actors()
     for actor in actors:
-        if actor.id in AWayNet_list:
+        if AWayNet_list.containsActor(actor.id):
             # . selects actors that have NOT received new message
             if actorIDList[originActor].isNewerThan(actorIDList[actor.id]):
-                #. draws a fancy boundarybox in woreframe. nolonger needed.
-                '''
-                # world.debug.draw_box(
-                #     carla.BoundingBox(                                                              #.box
-                #         actor.get_transform().location,                                             #.  ---> location
-                #         carla.Vector3D(actor.bounding_box.extent*1.25)),                            #.  ---> extent
-
-                #     actor.get_transform().rotation,                                                 #.rotation
-                #     0.05,                                                                           #.thickness
-                #     carla.Color(255,0,0,0),                                                         #.color
-                #     1                                                                               #.life_time
-                #     )
-                '''
-
                 actor_transform = actor.get_transform()
                 actor_transform.location.z += 3.0
 
                 world.debug.draw_point(
                     actor_transform.location,
-                    size= 0.125,
-                    life_time=math.sqrt((1/_fps)),
-                    color=carla.Color(255,0,0,0)
+                    size=0.125,
+                    life_time=math.sqrt((1 / _fps)),
+                    color=carla.Color(255, 0, 0, 0),
                 )
             # . selects actors that have received new message
             else:
                 actor_transform = actor.get_transform()
                 actor_transform.location.z += 3.0
 
-                #. draws cube above awaynet participants to indicate update status
+                # . draws cube above awaynet participants to indicate update status
                 world.debug.draw_point(
                     actor_transform.location,
-                    size= 0.125,
-                    life_time=math.sqrt((1/_fps)),
-                    color=carla.Color(0,255,0,0)
+                    size=0.125,
+                    life_time=math.sqrt((1 / _fps)),
+                    color=carla.Color(0, 255, 0, 0),
                 )
 
-def checkPropagationStatus(actorIDList, debug):
-    global first_contact
-    global final_contact
-    global hero_message
-    global start_time
 
-    if first_contact == False or final_contact == False:
-        contacted_actors = 0
-        for actor in actorIDList:
-            if actorIDList[actor].getMessage() == hero_message:
-                contacted_actors = contacted_actors + 1
+def spawn_vehicles(args, client, sim_world, traffic_manager, vehicles_list):
+    global number_of_vehicles
 
-        if contacted_actors == 2 and first_contact == False:
-            print("first contact made.")
-            first_contact = True
-            #. start timer
-            start_time = time.time()
+    blueprints = get_actor_blueprints(sim_world, "vehicle.*", "All")
+    blueprints = sorted(blueprints, key=lambda bp: bp.id)
 
-        elif contacted_actors == len(actorIDList) and final_contact == False:
-            print("final contact made.")
-            final_contact = True
-            #. stop timer
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print("#================================================================")
-            print("Total propagation time: "+str(round(elapsed_time)))
-            print("#================================================================")
-            text = "================================================================ \nTotal propagation time: "+str(round(elapsed_time))+"\n================================================================"
-        print(str(contacted_actors)+"/"+str(len(actorIDList)))
+    spawn_points = sim_world.get_map().get_spawn_points()
+    number_of_spawn_points = len(spawn_points)
+
+    if number_of_vehicles < number_of_spawn_points:
+        random.shuffle(spawn_points)
+    elif number_of_vehicles > number_of_spawn_points:
+        msg = "requested %d vehicles, but could only find %d spawn points"
+        logging.warning(msg, number_of_vehicles, number_of_spawn_points)
+        number_of_vehicles = number_of_spawn_points
+
+    SpawnActor = carla.command.SpawnActor
+    SetAutopilot = carla.command.SetAutopilot
+    FutureActor = carla.command.FutureActor
+
+    batch = []
+    for n, transform in enumerate(spawn_points):
+        if n >= number_of_vehicles:
+            break
+        blueprint = random.choice(blueprints)
+        while blueprint.has_attribute("has_lights") == False:
+            blueprint = random.choice(blueprints)
+
+        if blueprint.has_attribute("color"):
+            color = random.choice(blueprint.get_attribute("color").recommended_values)
+            blueprint.set_attribute("color", color)
+        if blueprint.has_attribute("driver_id"):
+            driver_id = random.choice(blueprint.get_attribute("driver_id").recommended_values)
+            blueprint.set_attribute("driver_id", driver_id)
+        else:
+            blueprint.set_attribute("role_name", "autopilot")
+
+            # . spawn the cars and set their autopilot and light state all together
+        batch.append(SpawnActor(blueprint, transform).then(SetAutopilot(FutureActor, True, traffic_manager.get_port())))
+
+    for response in client.apply_batch_sync(batch, args.sync):
+        if response.error:
+            logging.error(response.error)
+        else:
+            vehicles_list.append(response.actor_id)
+
+    print("Spawned %d vehicles." % (len(vehicles_list)))
+
+    return vehicles_list
+
+
+def spawn_walkers(args, client, sim_world, walkers_list, walkers_ids):
+    SpawnActor = carla.command.SpawnActor
+    global number_of_walkers
+
+    blueprintsWalkers = get_actor_blueprints(sim_world, "walker.pedestrian.*", "2")
+
+    percentagePedestriansRunning = 0.0  # how many pedestrians will run
+    percentagePedestriansCrossing = 0.0  # how many pedestrians will walk through the road
+
+    spawn_points = []
+    for i in range(number_of_walkers):
+        spawn_point = carla.Transform()
+        loc = sim_world.get_random_location_from_navigation()
+        if loc != None:
+            spawn_point.location = loc
+            spawn_points.append(spawn_point)
+        # 2. we spawn the walker object
+    batch = []
+    walker_speed = []
+    for spawn_point in spawn_points:
+        walker_bp = random.choice(blueprintsWalkers)
+        # set as not invincible
+        if walker_bp.has_attribute("is_invincible"):
+            walker_bp.set_attribute("is_invincible", "false")
+            # set the max speed
+        if walker_bp.has_attribute("speed"):
+            if random.random() > percentagePedestriansRunning:
+                # walking
+                walker_speed.append(walker_bp.get_attribute("speed").recommended_values[1])
+            else:
+                # running
+                walker_speed.append(walker_bp.get_attribute("speed").recommended_values[2])
+        else:
+            print("Walker has no speed")
+            walker_speed.append(0.0)
+        batch.append(SpawnActor(walker_bp, spawn_point))
+    results = client.apply_batch_sync(batch, True)
+    walker_speed2 = []
+    for i in range(len(results)):
+        if results[i].error:
+            logging.error(results[i].error)
+        else:
+            walkers_list.append({"id": results[i].actor_id})
+            walker_speed2.append(walker_speed[i])
+    walker_speed = walker_speed2
+    # 3. we spawn the walker controller
+    batch = []
+    walker_controller_bp = sim_world.get_blueprint_library().find("controller.ai.walker")
+    for i in range(len(walkers_list)):
+        batch.append(SpawnActor(walker_controller_bp, carla.Transform(), walkers_list[i]["id"]))
+    results = client.apply_batch_sync(batch, True)
+    for i in range(len(results)):
+        if results[i].error:
+            logging.error(results[i].error)
+        else:
+            walkers_list[i]["con"] = results[i].actor_id
+        # 4. we put together the walkers and controllers id to get the objects from their id
+    for i in range(len(walkers_list)):
+        walkers_ids.append(walkers_list[i]["con"])
+        walkers_ids.append(walkers_list[i]["id"])
+    all_actors = sim_world.get_actors(walkers_ids)
+
+    if args.sync:
+        sim_world.tick()
+    else:
+        sim_world.wait_for_tick()
+
+        # 5. initialize each controller and set target to walk to (list is [controler, actor, controller, actor ...])
+        # set how many pedestrians can cross the road
+    sim_world.set_pedestrians_cross_factor(percentagePedestriansCrossing)
+    for i in range(0, len(walkers_ids), 2):
+        # start walker
+        all_actors[i].start()
+        # set walk to random point
+        all_actors[i].go_to_location(sim_world.get_random_location_from_navigation())
+        # max speed
+        all_actors[i].set_max_speed(float(walker_speed[int(i / 2)]))
+    print("Spawned %d walkers." % (len(walkers_list)))
+    return walkers_list, walkers_ids
+
+
+def prepare_scenario(sim_world):
+    # . sets weather
+    sim_world.set_weather(carla.WeatherParameters.ClearSunset)
+    # sim_world.set_weather(carla.WeatherParameters.ClearNight)
+    # sim_world.set_weather(carla.WeatherParameters.ClearNoon)
+
+    # . positions spectator in top-down view
+    spectator = sim_world.get_spectator()
+    spectator.set_transform(
+        carla.Transform(
+            carla.Location(x=4.635590, y=36.175838, z=192.364319),
+            carla.Rotation(pitch=-90, yaw=-0, roll=-90),
+        )
+    )
+
+    # . positions player (ego) out of the way so we control introduction time of new message
+    for actor in sim_world.get_actors():
+        if actor.attributes.get("role_name") == "hero":
+            actor.set_transform(
+                carla.Transform(
+                    carla.Location(x=136.513748, y=95.039558, z=0.090692),
+                    carla.Rotation(pitch=0.006557, yaw=-179.795471, roll=-0.041992),
+                )
+            )
+
+
 #! ==============================================================================
 
 
@@ -724,7 +1014,11 @@ class KeyboardControl(object):
                 self._control.brake = min(self._control.brake + 0.2, 1)
             else:
                 self._ackermann_control.speed -= (
-                    min(abs(self._ackermann_control.speed), round(milliseconds * 0.005, 2)) * self._ackermann_reverse
+                    min(
+                        abs(self._ackermann_control.speed),
+                        round(milliseconds * 0.005, 2),
+                    )
+                    * self._ackermann_reverse
                 )
                 self._ackermann_control.speed = max(0, abs(self._ackermann_control.speed)) * self._ackermann_reverse
         else:
@@ -856,7 +1150,13 @@ class HUD(object):
                 ]
         elif isinstance(c, carla.WalkerControl):
             self._info_text += [("Speed:", c.speed, 0.0, 5.556), ("Jump:", c.jump)]
-        self._info_text += ["", "Collision:", collision, "", "Number of vehicles: % 8d" % len(vehicles)]
+        self._info_text += [
+            "",
+            "Collision:",
+            collision,
+            "",
+            "Number of vehicles: % 8d" % len(vehicles),
+        ]
         if len(vehicles) > 1:
             self._info_text += ["Nearby vehicles:"]
             distance = lambda l: math.sqrt(
@@ -910,7 +1210,10 @@ class HUD(object):
                         pygame.draw.rect(display, (255, 255, 255), rect_border, 1)
                         f = (item[1] - item[2]) / (item[3] - item[2])
                         if item[2] < 0.0:
-                            rect = pygame.Rect((bar_h_offset + f * (bar_width - 6), v_offset + 8), (6, 6))
+                            rect = pygame.Rect(
+                                (bar_h_offset + f * (bar_width - 6), v_offset + 8),
+                                (6, 6),
+                            )
                         else:
                             rect = pygame.Rect((bar_h_offset, v_offset + 8), (f * bar_width, 6))
                         pygame.draw.rect(display, (255, 255, 255), rect)
@@ -945,6 +1248,7 @@ class FadingText(object):
 
     def render(self, display):
         display.blit(self.surface, self.pos)
+
 
 class HelpText(object):
     """Helper class to handle text output using pygame"""
@@ -1017,7 +1321,7 @@ class AObstacleDetectionSensor(object):
         bp = world.get_blueprint_library().find("sensor.other.obstacle")
 
         bp.set_attribute("only_dynamics", str(True))  # . only applies to 'dynamic' objects
-        bp.set_attribute("debug_linetrace", str(False))  #! ☠️☠️☠️'True' will bring the fps down to like 1
+        bp.set_attribute("debug_linetrace", str(False))  #! ☠️☠️☠️ setting to 'True' murders fps
         bp.set_attribute("distance", str(1))  # . '1' should convert capsule to sphere
         bp.set_attribute("hit_radius", str(hit_radius))  # ? in meters?
 
@@ -1028,47 +1332,22 @@ class AObstacleDetectionSensor(object):
 
     @staticmethod
     def _on_obstacle(weak_self, event):
-        global start_time
+        global AWayNet_list
         self = weak_self()
         if not self:
             return
 
-        # other_actor = get_actor_display_name(event.other_actor)  # . Actor detected as an obstacle.
+        # other_actor = get_actor_display_name(event.other_actor)  #. Actor detected as an obstacle.
         # actor = get_actor_display_name(event.actor) #. Actor that detected the obstacle (will be the obstacle sensor, not the parent).
         # distance = event.distance #. Distance from actor to other_actor.
 
         detector_actor = event.actor.parent.id
         other_actor = event.other_actor.id
 
-        if other_actor in AWayNet_list:  # . prevents error when 'other_actor' isn't in 'AWayNet_list'
-
+        if AWayNet_list is not None and AWayNet_list.containsActor(other_actor):
             # . check to see if other_actor's info is outdated
-            if AWayNet_list[detector_actor].isNewerThan(AWayNet_list[other_actor]):
-                print("\n" + str(detector_actor) + "'s message is newer than " + str(other_actor) + "'s")
+            AWayNet_list.updateOlderTimestamp(detector_actor, other_actor)
 
-                 # . if it is out of date, assign it the message from detector_actor to other_actor
-                AWayNet_list[other_actor].setMessage(
-                    AWayNet_list[detector_actor].getMessage(), AWayNet_list[detector_actor].getTimestamp()
-                )
-                print(str(other_actor) + " updated to " + AWayNet_list[other_actor].print())
-
-                #. display time actor was contact at coordinates of interaction
-                other_actor_location = event.other_actor.get_location()
-                detector_actor_location = event.actor.parent.get_location()
-                other_actor_location.z += 10.0
-                text = str(round(time.time()-start_time))+"s"
-                self.debug.draw_string(other_actor_location, text, draw_shadow=True, color=carla.Color(255,0,0), life_time=60)
-
-                # #. opens doors and illuminates all equipped lights of propagated actors. no longer needed.
-                '''
-                event.other_actor.open_door(carla.VehicleDoor.All)
-                print("opened all doors on "+str(other_actor))
-
-                event.other_actor.set_light_state(carla.VehicleLightState.All)
-                print("turned on all the lignts on "+str(other_actor))
-                '''
-
-                checkPropagationStatus(AWayNet_list, self.debug)
 
 class LaneInvasionSensor(object):
     def __init__(self, parent_actor, hud):
@@ -1095,6 +1374,7 @@ class LaneInvasionSensor(object):
         text = ["%r" % str(x).split()[-1] for x in lane_types]
         self.hud.notification("Crossed line %s" % " and ".join(text))
 
+
 class GnssSensor(object):
     def __init__(self, parent_actor):
         self.sensor = None
@@ -1116,6 +1396,7 @@ class GnssSensor(object):
             return
         self.lat = event.latitude
         self.lon = event.longitude
+
 
 class IMUSensor(object):
     def __init__(self, parent_actor):
@@ -1150,6 +1431,7 @@ class IMUSensor(object):
         )
         self.compass = math.degrees(sensor_data.compass)
 
+
 class RadarSensor(object):
     def __init__(self, parent_actor):
         self.sensor = None
@@ -1166,7 +1448,10 @@ class RadarSensor(object):
         bp.set_attribute("vertical_fov", str(20))
         self.sensor = world.spawn_actor(
             bp,
-            carla.Transform(carla.Location(x=bound_x + 0.05, z=bound_z + 0.05), carla.Rotation(pitch=5)),
+            carla.Transform(
+                carla.Location(x=bound_x + 0.05, z=bound_z + 0.05),
+                carla.Rotation(pitch=5),
+            ),
             attach_to=self._parent,
         )
         # We need a weak reference to self to avoid circular reference.
@@ -1191,7 +1476,11 @@ class RadarSensor(object):
             fw_vec = carla.Vector3D(x=detect.depth - 0.25)
             carla.Transform(
                 carla.Location(),
-                carla.Rotation(pitch=current_rot.pitch + alt, yaw=current_rot.yaw + azi, roll=current_rot.roll),
+                carla.Rotation(
+                    pitch=current_rot.pitch + alt,
+                    yaw=current_rot.yaw + azi,
+                    roll=current_rot.roll,
+                ),
             ).transform(fw_vec)
 
             def clamp(min_v, max_v, value):
@@ -1209,6 +1498,7 @@ class RadarSensor(object):
                 color=carla.Color(r, g, b),
             )
 
+
 class CameraManager(object):
     def __init__(self, parent_actor, hud, gamma_correction):
         self.sensor = None
@@ -1225,7 +1515,8 @@ class CameraManager(object):
             self._camera_transforms = [
                 (
                     carla.Transform(
-                        carla.Location(x=-2.0 * bound_x, y=+0.0 * bound_y, z=2.0 * bound_z), carla.Rotation(pitch=8.0)
+                        carla.Location(x=-2.0 * bound_x, y=+0.0 * bound_y, z=2.0 * bound_z),
+                        carla.Rotation(pitch=8.0),
                     ),
                     Attachment.SpringArmGhost,
                 ),
@@ -1239,22 +1530,35 @@ class CameraManager(object):
                 ),
                 (
                     carla.Transform(
-                        carla.Location(x=-2.8 * bound_x, y=+0.0 * bound_y, z=4.6 * bound_z), carla.Rotation(pitch=6.0)
+                        carla.Location(x=-2.8 * bound_x, y=+0.0 * bound_y, z=4.6 * bound_z),
+                        carla.Rotation(pitch=6.0),
                     ),
                     Attachment.SpringArmGhost,
                 ),
-                (carla.Transform(carla.Location(x=-1.0, y=-1.0 * bound_y, z=0.4 * bound_z)), Attachment.Rigid),
+                (
+                    carla.Transform(carla.Location(x=-1.0, y=-1.0 * bound_y, z=0.4 * bound_z)),
+                    Attachment.Rigid,
+                ),
             ]
         else:
             self._camera_transforms = [
-                (carla.Transform(carla.Location(x=-2.5, z=0.0), carla.Rotation(pitch=-8.0)), Attachment.SpringArmGhost),
+                (
+                    carla.Transform(carla.Location(x=-2.5, z=0.0), carla.Rotation(pitch=-8.0)),
+                    Attachment.SpringArmGhost,
+                ),
                 (carla.Transform(carla.Location(x=1.6, z=1.7)), Attachment.Rigid),
                 (
                     carla.Transform(carla.Location(x=2.5, y=0.5, z=0.0), carla.Rotation(pitch=-8.0)),
                     Attachment.SpringArmGhost,
                 ),
-                (carla.Transform(carla.Location(x=-4.0, z=2.0), carla.Rotation(pitch=6.0)), Attachment.SpringArmGhost),
-                (carla.Transform(carla.Location(x=0, y=-2.5, z=-0.0), carla.Rotation(yaw=90.0)), Attachment.Rigid),
+                (
+                    carla.Transform(carla.Location(x=-4.0, z=2.0), carla.Rotation(pitch=6.0)),
+                    Attachment.SpringArmGhost,
+                ),
+                (
+                    carla.Transform(carla.Location(x=0, y=-2.5, z=-0.0), carla.Rotation(yaw=90.0)),
+                    Attachment.Rigid,
+                ),
             ]
 
         self.transform_index = 1
@@ -1262,8 +1566,18 @@ class CameraManager(object):
             ["sensor.camera.rgb", cc.Raw, "Camera RGB", {}],
             ["sensor.camera.depth", cc.Raw, "Camera Depth (Raw)", {}],
             ["sensor.camera.depth", cc.Depth, "Camera Depth (Gray Scale)", {}],
-            ["sensor.camera.depth", cc.LogarithmicDepth, "Camera Depth (Logarithmic Gray Scale)", {}],
-            ["sensor.camera.semantic_segmentation", cc.Raw, "Camera Semantic Segmentation (Raw)", {}],
+            [
+                "sensor.camera.depth",
+                cc.LogarithmicDepth,
+                "Camera Depth (Logarithmic Gray Scale)",
+                {},
+            ],
+            [
+                "sensor.camera.semantic_segmentation",
+                cc.Raw,
+                "Camera Semantic Segmentation (Raw)",
+                {},
+            ],
             [
                 "sensor.camera.semantic_segmentation",
                 cc.CityScapesPalette,
@@ -1276,7 +1590,12 @@ class CameraManager(object):
                 "Camera Instance Segmentation (CityScapes Palette)",
                 {},
             ],
-            ["sensor.camera.instance_segmentation", cc.Raw, "Camera Instance Segmentation (Raw)", {}],
+            [
+                "sensor.camera.instance_segmentation",
+                cc.Raw,
+                "Camera Instance Segmentation (Raw)",
+                {},
+            ],
             ["sensor.lidar.ray_cast", None, "Lidar (Ray-Cast)", {"range": "50"}],
             ["sensor.camera.dvs", cc.Raw, "Dynamic Vision Sensor", {}],
             [
@@ -1375,7 +1694,15 @@ class CameraManager(object):
             # Example of converting the raw_data from a carla.DVSEventArray
             # sensor into a NumPy array and using it as an image
             dvs_events = np.frombuffer(
-                image.raw_data, dtype=np.dtype([("x", np.uint16), ("y", np.uint16), ("t", np.int64), ("pol", np.bool)])
+                image.raw_data,
+                dtype=np.dtype(
+                    [
+                        ("x", np.uint16),
+                        ("y", np.uint16),
+                        ("t", np.int64),
+                        ("pol", np.bool),
+                    ]
+                ),
             )
             dvs_img = np.zeros((image.height, image.width, 3), dtype=np.uint8)
             # Blue is positive, red is negative
@@ -1400,6 +1727,7 @@ class CameraManager(object):
 
 
 def game_loop(args):
+    global AWayNet_list
     pygame.init()
     pygame.font.init()
     world = None
@@ -1411,9 +1739,6 @@ def game_loop(args):
 
         sim_world = client.get_world()
 
-        if len(sim_world.get_actors().filter("sensor.other.obstacle")) == 0:
-            print("don't listen to her. all of the old sensors were successfully deleted.")
-
         if args.sync:
             original_settings = sim_world.get_settings()
             settings = sim_world.get_settings()
@@ -1424,151 +1749,20 @@ def game_loop(args):
 
             traffic_manager = client.get_trafficmanager()
             traffic_manager.set_synchronous_mode(True)
-            tm_port = traffic_manager.get_port()
         else:
             print("[!] This script was executed in Asynchronous mode. Was this intentional?")
 
         if args.autopilot and not sim_world.get_settings().synchronous_mode:
-            print(
-                "WARNING: You are currently in asynchronous mode and could "
-                "experience some issues with the traffic simulation"
-            )
+            print("WARNING: You're currently in asynchronous mode and could experience issues with traffic simulation")
 
-        #! adding vehicle generation here -----------------------------------------------
+        # . vehicle generation
         vehicles_list = []
-        global number_of_vehicles
+        vehicles_list = spawn_vehicles(args, client, sim_world, traffic_manager, vehicles_list)
 
-        print("Spawning " + str(number_of_vehicles) + " vehicles")
-        blueprints = get_actor_blueprints(sim_world, "vehicle.*", "All")
-        blueprints = sorted(blueprints, key=lambda bp: bp.id)
-
-        spawn_points = sim_world.get_map().get_spawn_points()
-        number_of_spawn_points = len(spawn_points)
-
-        if number_of_vehicles < number_of_spawn_points:
-            random.shuffle(spawn_points)
-        elif number_of_vehicles > number_of_spawn_points:
-            msg = "requested %d vehicles, but could only find %d spawn points"
-            logging.warning(msg, number_of_vehicles, number_of_spawn_points)
-            number_of_vehicles = number_of_spawn_points
-
-        SpawnActor = carla.command.SpawnActor
-        SetAutopilot = carla.command.SetAutopilot
-        FutureActor = carla.command.FutureActor
-
-        batch = []
-        for n, transform in enumerate(spawn_points):
-            if n >= number_of_vehicles:
-                break
-            blueprint = random.choice(blueprints)
-            while blueprint.has_attribute("has_lights") == False:
-                blueprint = random.choice(blueprints)
-
-
-            if blueprint.has_attribute("color"):
-                color = random.choice(blueprint.get_attribute("color").recommended_values)
-                blueprint.set_attribute("color", color)
-            if blueprint.has_attribute("driver_id"):
-                driver_id = random.choice(blueprint.get_attribute("driver_id").recommended_values)
-                blueprint.set_attribute("driver_id", driver_id)
-            else:
-                blueprint.set_attribute("role_name", "autopilot")
-
-
-            # . spawn the cars and set their autopilot and light state all together
-            batch.append(
-                SpawnActor(blueprint, transform).then(SetAutopilot(FutureActor, True, traffic_manager.get_port()))
-            )
-
-        for response in client.apply_batch_sync(batch, args.sync):
-            if response.error:
-                logging.error(response.error)
-            else:
-                vehicles_list.append(response.actor_id)
-
-        #! ---------------------------------------------------------------------------------
-        #! adding walker generation here ---------------------------------------------------
+        # . walker generation
         walkers_list = []
-        all_id = []
-        global number_of_walkers
-
-        blueprintsWalkers = get_actor_blueprints(sim_world, "walker.pedestrian.*", "2")
-
-        percentagePedestriansRunning = 0.0      # how many pedestrians will run
-        percentagePedestriansCrossing = 0.0     # how many pedestrians will walk through the road
-
-        spawn_points = []
-        for i in range(number_of_walkers):
-            spawn_point = carla.Transform()
-            loc = sim_world.get_random_location_from_navigation()
-            if (loc != None):
-                spawn_point.location = loc
-                spawn_points.append(spawn_point)
-        # 2. we spawn the walker object
-        batch = []
-        walker_speed = []
-        for spawn_point in spawn_points:
-            walker_bp = random.choice(blueprintsWalkers)
-            # set as not invincible
-            if walker_bp.has_attribute('is_invincible'):
-                walker_bp.set_attribute('is_invincible', 'false')
-            # set the max speed
-            if walker_bp.has_attribute('speed'):
-                if (random.random() > percentagePedestriansRunning):
-                    # walking
-                    walker_speed.append(walker_bp.get_attribute('speed').recommended_values[1])
-                else:
-                    # running
-                    walker_speed.append(walker_bp.get_attribute('speed').recommended_values[2])
-            else:
-                print("Walker has no speed")
-                walker_speed.append(0.0)
-            batch.append(SpawnActor(walker_bp, spawn_point))
-        results = client.apply_batch_sync(batch, True)
-        walker_speed2 = []
-        for i in range(len(results)):
-            if results[i].error:
-                logging.error(results[i].error)
-            else:
-                walkers_list.append({"id": results[i].actor_id})
-                walker_speed2.append(walker_speed[i])
-        walker_speed = walker_speed2
-        # 3. we spawn the walker controller
-        batch = []
-        walker_controller_bp = sim_world.get_blueprint_library().find('controller.ai.walker')
-        for i in range(len(walkers_list)):
-            batch.append(SpawnActor(walker_controller_bp, carla.Transform(), walkers_list[i]["id"]))
-        results = client.apply_batch_sync(batch, True)
-        for i in range(len(results)):
-            if results[i].error:
-                logging.error(results[i].error)
-            else:
-                walkers_list[i]["con"] = results[i].actor_id
-        # 4. we put together the walkers and controllers id to get the objects from their id
-        for i in range(len(walkers_list)):
-            all_id.append(walkers_list[i]["con"])
-            all_id.append(walkers_list[i]["id"])
-        all_actors = sim_world.get_actors(all_id)
-
-        if args.sync:
-            sim_world.tick()
-        else:
-            sim_world.wait_for_tick()
-
-        # 5. initialize each controller and set target to walk to (list is [controler, actor, controller, actor ...])
-        # set how many pedestrians can cross the road
-        sim_world.set_pedestrians_cross_factor(percentagePedestriansCrossing)
-        for i in range(0, len(all_id), 2):
-            # start walker
-            all_actors[i].start()
-            # set walk to random point
-            all_actors[i].go_to_location(sim_world.get_random_location_from_navigation())
-            # max speed
-            all_actors[i].set_max_speed(float(walker_speed[int(i/2)]))
-
-        print('spawned %d vehicles and %d walkers, press Ctrl+C to exit.' % (len(vehicles_list), len(walkers_list)))
-        #! ---------------------------------------------------------------------------------
-
+        walkers_ids = []
+        walkers_list, walkers_ids = spawn_walkers(args, client, sim_world, walkers_list, walkers_ids)
 
         display = pygame.display.set_mode((args.width, args.height), pygame.HWSURFACE | pygame.DOUBLEBUF)
         display.fill((0, 0, 0))
@@ -1585,99 +1779,16 @@ def game_loop(args):
 
         clock = pygame.time.Clock()
 
-        #! ---------------------------------------------------------------------------------
-        #! more awaynet stuff --------------------------------------------------------------
-        sensor_list = []
-        global default_message
-        global hero_message
+        # . instantiate awaynet entity list
+        AWayNet_list = AWayNetList(sim_world)
 
-        # TODO #5 store state from carla.TrafficLight.get_state() in AWayNet data structure
-        # carla.TrafficLightState()
-
-        # TODO #2 update to include semantic nodes
-        #. find all actors in world
-        all_vehicle_actors = sim_world.get_actors(vehicles_list)
-        all_walker_actors = sim_world.get_actors().filter("walker.pedestrian.*")
-        all_nodes = sim_world.get_actors().filter("???")
-
-        # . finds all vehicles and creates accompanying AWayNet data structure
-        for actor in all_vehicle_actors:
-            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
-            timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds - 500.0
-            AWayNet_list[actor.id] = AWayNet(default_message, timestamp)
-
-            #. create obstacle detection sensor and attach sensor to vehicle (parent actor)
-            obstacle_sensor = AObstacleDetectionSensor(actor, vehicle_obstacle_distance)
-
-            # . add to sensor_list so we can keep accountability when destroying (currently broken)
-            sensor_list.append(obstacle_sensor)
-
-        # . finds all walkers and creates accompanying AWayNet data structure
-        for actor in all_walker_actors:
-            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
-            timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds - 500.0
-            AWayNet_list[actor.id] = AWayNet(default_message, timestamp)
-
-            #. create obstacle detection sensor and attach sensor to walker (parent actor)
-            obstacle_sensor = AObstacleDetectionSensor(actor, walker_obstacle_distance)
-
-            # . add to sensor_list so we can keep accountability when destroying (currently broken)
-            sensor_list.append(obstacle_sensor)
-
-        # . finds all walkers and creates accompanying AWayNet data structure
-        for actor in all_nodes:
-            # . instantiate AWayNet data structure with default values and modify so hero timestamp is newer
-            timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds - 500.0
-            AWayNet_list[actor.id] = AWayNet(default_message, timestamp)
-
-            #. create obstacle detection sensor and attach sensor to nodes (parent actor)
-            obstacle_sensor = AObstacleDetectionSensor(actor, node_obstacle_distance)
-
-            # . add to sensor_list so we can keep accountability when destroying (currently broken)
-            sensor_list.append(obstacle_sensor)
-
-        # . finds hero and creates accompanying AWayNet data structure. likely temporary.
-        for actor in sim_world.get_actors():
-            if actor.attributes.get("role_name") == "hero":
-                hero_timestamp = sim_world.get_snapshot().timestamp.elapsed_seconds
-                # . we give the hero a unique message and timestamp so that the message proapgates
-                AWayNet_list[actor.id] = AWayNet(hero_message, hero_timestamp)
-                print("the hero is ID " + str(actor.id) + ".")
-                heroID = actor.id #. used later to keep track of "patient zero" message
-                break
-
-        # . debug prints
-        for key, value in AWayNet_list.items():
-            print(str(key) + ": " + value.print())
-
-        #. sets weather
-        # sim_world.set_weather(carla.WeatherParameters.ClearNight)
-        # sim_world.set_weather(carla.WeatherParameters.ClearNoon)
-        sim_world.set_weather(carla.WeatherParameters.ClearSunset)
-
-        #. turns off all of the lights in the map
-        # light_manager = sim_world.get_lightmanager()
-        # all_lights = light_manager.get_all_lights()
-        # light_manager.turn_off(all_lights)
-
-        #. turns off all of the lights on each vehicle
-        # for actor in all_vehicle_actors:
-        #     actor.set_light_state(carla.VehicleLightState.NONE)
-
-        #. positions spectator in top-down view
-        spectator = sim_world.get_spectator()
-        spectator.set_transform(carla.Transform(carla.Location(x=4.635590, y=36.175838, z=192.364319), carla.Rotation(pitch=-90, yaw=-0, roll=-90)))
-
-        #. positions player (ego) out of the way so we control introduction time of new message
-        for actor in sim_world.get_actors():
-            if actor.attributes.get("role_name") == "hero":
-                actor.set_transform(carla.Transform(carla.Location(x=136.513748, y=95.039558, z=0.090692), carla.Rotation(pitch=0.006557, yaw=-179.795471, roll=-0.041992)))
-        #! ---------------------------------------------------------------------------------
+        # . set up environment for our particular test scenario (weather, spectator position, etc.)
+        prepare_scenario(sim_world)
 
         while True:
             if args.sync:
                 sim_world.tick()
-                drawBoxesAroundPropagatedActors(sim_world, heroID, AWayNet_list)
+                renderCubeOverPropagatedActors(sim_world, AWayNet_list.getHeroID(), AWayNet_list.dictionary)
             clock.tick_busy_loop(60)
             if controller.parse_events(client, world, clock, args.sync):
                 return
@@ -1689,21 +1800,19 @@ def game_loop(args):
         if original_settings:
             sim_world.apply_settings(original_settings)
 
-        print("\ndestroying %d vehicles" % len(vehicles_list))
+        print("Destroying %d vehicles" % len(vehicles_list))
         client.apply_batch([carla.command.DestroyActor(x) for x in vehicles_list])
 
-        print('\ndestroying %d walkers' % len(walkers_list))
-        client.apply_batch([carla.command.DestroyActor(x) for x in all_id])
+        print("Destroying %d walkers" % len(walkers_list))
+        client.apply_batch([carla.command.DestroyActor(x) for x in walkers_ids])
 
-        #. properly destroy obstacle sensors when exiting client (unnecessary, apparently?)
-        '''
-        obstacle_sensors = sim_world.get_actors().filter("sensor.other.obstacle")
-        for sensor in obstacle_sensors:
-            sensor.stop()
-        client.apply_batch([carla.command.DestroyActor(x) for x in obstacle_sensors])
-        for sensor in obstacle_sensors:
-            sensor.destroy()
-        '''
+        # . the scorched earth method to remove actors when i implement something incorrectly
+        """
+        all_vehicle_actors = sim_world.get_actors().filter("vehicle.*")
+        client.apply_batch([carla.command.DestroyActor(x.id) for x in all_vehicle_actors])
+        all_walker_actors = sim_world.get_actors().filter("walker.pedestrian.*")
+        client.apply_batch([carla.command.DestroyActor(x.id) for x in all_walker_actors])
+        """
 
         if world and world.recording_enabled:
             client.stop_recorder()
@@ -1711,7 +1820,7 @@ def game_loop(args):
         if world is not None:
             world.destroy()
 
-        #. holds data structures for each AWayNet-compatible actor
+        # . holds data structures for each AWayNet-compatible actor
         AWayNet_list.clear()
 
         pygame.quit()
@@ -1719,19 +1828,39 @@ def game_loop(args):
 
 def main():
     argparser = argparse.ArgumentParser(description="CARLA Manual Control Client")
-    argparser.add_argument("-v", "--verbose", action="store_true", dest="debug", help="print debug information")
     argparser.add_argument(
-        "--host", metavar="H", default="127.0.0.1", help="IP of the host server (default: 127.0.0.1)"
+        "-v",
+        "--verbose",
+        action="store_true",
+        dest="debug",
+        help="print debug information",
     )
     argparser.add_argument(
-        "-p", "--port", metavar="P", default=2000, type=int, help="TCP port to listen to (default: 2000)"
+        "--host",
+        metavar="H",
+        default="127.0.0.1",
+        help="IP of the host server (default: 127.0.0.1)",
+    )
+    argparser.add_argument(
+        "-p",
+        "--port",
+        metavar="P",
+        default=2000,
+        type=int,
+        help="TCP port to listen to (default: 2000)",
     )
     argparser.add_argument("-a", "--autopilot", action="store_true", help="enable autopilot")
     argparser.add_argument(
-        "--res", metavar="WIDTHxHEIGHT", default="1280x720", help="window resolution (default: 1280x720)"
+        "--res",
+        metavar="WIDTHxHEIGHT",
+        default="1280x720",
+        help="window resolution (default: 1280x720)",
     )
     argparser.add_argument(
-        "--filter", metavar="PATTERN", default="vehicle.*", help='actor filter (default: "vehicle.*")'
+        "--filter",
+        metavar="PATTERN",
+        default="vehicle.*",
+        help='actor filter (default: "vehicle.*")',
     )
     argparser.add_argument(
         "--generation",
@@ -1739,8 +1868,18 @@ def main():
         default="2",
         help='restrict to certain actor generation (values: "1","2","All" - default: "2")',
     )
-    argparser.add_argument("--rolename", metavar="NAME", default="hero", help='actor role name (default: "hero")')
-    argparser.add_argument("--gamma", default=2.2, type=float, help="Gamma correction of the camera (default: 2.2)")
+    argparser.add_argument(
+        "--rolename",
+        metavar="NAME",
+        default="hero",
+        help='actor role name (default: "hero")',
+    )
+    argparser.add_argument(
+        "--gamma",
+        default=2.2,
+        type=float,
+        help="Gamma correction of the camera (default: 2.2)",
+    )
     argparser.add_argument("--sync", action="store_true", help="Activate synchronous mode execution")
     args = argparser.parse_args()
 
@@ -1751,7 +1890,7 @@ def main():
 
     logging.info("listening to server %s:%s", args.host, args.port)
 
-    print(__doc__)
+    # print(__doc__)
 
     try:
         game_loop(args)
