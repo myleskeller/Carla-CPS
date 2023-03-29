@@ -145,7 +145,7 @@ except ImportError:
 
 import time
 
-number_of_walkers = 50
+number_of_walkers = 40
 number_of_vehicles = 5
 
 vehicle_obstacle_distance = 10
@@ -274,6 +274,7 @@ class AWayNetList:
     def checkPropagation(self):
         global start_time
 
+        # . simulates scenario in which all traffic lights are grid connected
         if traffic_lights_connected:
             connection_made = False
             newer_light = None
@@ -283,6 +284,7 @@ class AWayNetList:
                     newer_light = light.id
                     break
 
+            # . if one traffic light gets an update, all traffic lights receive the update
             if connection_made:
                 for light in self.traffic_lights:
                     self.updateOlderTimestamp(light.id, newer_light)  # ? does this work?
@@ -1370,7 +1372,7 @@ class AObstacleDetectionSensor(object):
         bp = world.get_blueprint_library().find("sensor.other.obstacle")
 
         bp.set_attribute("only_dynamics", str(True))  # . only applies to 'dynamic' objects
-        bp.set_attribute("debug_linetrace", str(False))  #! ☠️☠️☠️ setting to 'True' absolutely murders fps
+        bp.set_attribute("debug_linetrace", str(False))  #! ☠️☠️☠️ setting to 'False' absolutely murders fps
         bp.set_attribute("distance", str(1))  # . '1' should convert capsule to semi-sphere
         bp.set_attribute("hit_radius", str(hit_radius))  # ? in meters?
 
