@@ -1,4 +1,4 @@
-# Carla-CPS
+# CarlaCPS
 
 This is a client-side python file that interacts with the PythonAPI component of carla and attempts to simulate data propagation across actors within a map in the form of vehicles, walkers, and specific semantic nodes. 
 
