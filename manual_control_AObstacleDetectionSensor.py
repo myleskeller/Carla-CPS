@@ -144,6 +144,14 @@ except ImportError:
     raise RuntimeError("cannot import numpy, make sure numpy package is installed")
 
 import time
+import math
+
+freq_min, freq_max = 850, 960  # . https://skyrfid.com/RFID_Range.php
+# . below is all speculation according to: https://electronics.stackexchange.com/a/109410
+carrier_freq = math.average(freq_min, freq_max)
+encFactor = 22.625
+data_rate = carrier_freq / encFactor  # in Kbps; should be ~40 with encFactor 22.625 & freq 850-960 MHz
+fixed_delta_seconds = 0.05  # . https://carla.readthedocs.io/en/latest/adv_synchrony_timestep/#fixed-time-step
 
 number_of_walkers = 40
 number_of_vehicles = 5
@@ -151,9 +159,11 @@ number_of_vehicles = 5
 vehicle_obstacle_distance = 10
 walker_obstacle_distance = 5
 node_obstacle_distance = 50  # . for now assuming that these include powered infrastructure
+# TODO add distance for passive static tags
 
 default_message = "No volcanoes yet."
 hero_message = "THERE IS A VOLCANO."
+message_bits = 8000000  # = len(hero_message)*8 #! hard-coded as 1MB for testing
 
 start_time = 0
 fps = 0
@@ -550,6 +560,9 @@ def prepare_scenario(sim_world):
     sim_world.set_weather(carla.WeatherParameters.ClearSunset)
     # sim_world.set_weather(carla.WeatherParameters.ClearNight)
     # sim_world.set_weather(carla.WeatherParameters.ClearNoon)
+
+    # TODO add map loading here. comment out repositioning of spectator/player (below) before testing, as cooridnates will be incorrect.
+    # . map things...
 
     # . positions spectator in top-down view
     spectator = sim_world.get_spectator()
@@ -1795,7 +1808,8 @@ def game_loop(args):
             settings = sim_world.get_settings()
             if not settings.synchronous_mode:
                 settings.synchronous_mode = True
-                settings.fixed_delta_seconds = 0.05
+                global fixed_delta_settings
+                settings.fixed_delta_seconds = fixed_delta_settings
             sim_world.apply_settings(settings)
 
             traffic_manager = client.get_trafficmanager()
